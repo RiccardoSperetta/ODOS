@@ -1,3 +1,4 @@
+#include "doca_error.h"
 #include <string>
 #include <cstddef>
 #include <vector>
@@ -9,8 +10,12 @@
 #include <doca_log.h>
 #include <doca_dma.h>
 #include <doca_dpa.h>
-#include <doca_comm_channel.h>
+#include <doca_comch.h>
 
+#include <doca_ctx.h>
+#include <doca_pe.h>
+
+// TODO: verify matching name with docaservice when dealing with multiple dpus
 #define SERVER_NAME "OMP_"
 
 #define _DEM_ "---"
@@ -44,8 +49,6 @@ struct bf_openmp_cmd {
 };
 
 
-
-
 struct Command {
   enum {
 	CMD_WRITE_IMAGE = 0,
@@ -71,12 +74,38 @@ struct Command {
  };
 };
 
-
-
+///struct to support host-DPU communication
 struct BlueFieldConnection {
-  struct doca_comm_channel_ep_t   *ep;
-  struct doca_comm_channel_addr_t *peer;
+  struct doca_comch_client      *client;
+  struct doca_ctx               *ctx;
+  struct doca_pe                *pe;
+  struct doca_comch_connection  *connection;
   
+  //FIXME: inconsistent with docaservice buffers size
+  char sbuf[4080];
+  char rbuf[4080];
+
+  //NOTE: may not need send_result
+  doca_error_t send_result = DOCA_SUCCESS;
+  size_t recv_got   = 0;
+  volatile bool   recv_ready = false;
+
+  
+  /// Callback for successful completion of a message send
+  static void send_completion_cb(doca_comch_task_send *task,
+                                  union doca_data task_user_data,
+                                  union doca_data ctx_user_data);
+  /// Callback for unsuccessful completion of a message send
+  static void send_error_cb(doca_comch_task_send *task,
+                              union doca_data task_user_data,
+                              union doca_data ctx_user_data);
+  /// Callback event for a new message being received
+  static void message_recv_cb(struct doca_comch_event_msg_recv *event,
+                                   uint8_t *recv_buffer,
+                                   uint32_t msg_len,         
+                                   struct doca_comch_connection *comch_connection);
+
+  //FIXME: unused variables
   int epoll_fd;
   int  send_fd;
   int  recv_fd;
@@ -84,14 +113,10 @@ struct BlueFieldConnection {
   struct epoll_event send_event;
   struct epoll_event recv_event;
   
-  char sbuf[4080];
-  char rbuf[4080];
-  
   pthread_mutex_t lock;
   //sem_t * lock_;
   int lock_;
   key_t key_;
-
 };
 
 struct DynamicLibrary {
@@ -108,7 +133,9 @@ struct BlueField {
   struct DynamicLibrary DynLib;
   int init(int id, int mode);
   int deinit();
+
   int connect();
+  int disconnect();
 
   int alloc();
   void getInfo(std::vector<std::string> &labels, std::vector<std::string> &info);
@@ -119,7 +146,9 @@ struct BlueField {
     CLIENTMODE,
   };
 
+  ///send to server
   int send_buf(const void *buf, size_t sz);
+  ///receive from server
   int recv_buf(      void *buf, size_t sz);
 
 
@@ -128,7 +157,6 @@ struct BlueField {
 private:
   struct doca_dev             *dev;
   struct doca_dev_rep     *rep_dev;
-  struct doca_log_backend *sdk_log;
 
   int mode;
 };

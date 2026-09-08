@@ -95,7 +95,7 @@ target_link_libraries(
   "omptarget.rtl.bf" PRIVATE
   "${DOCA_LIBPATH}/libdoca_common.so"
   "${DOCA_LIBPATH}/libdoca_dma.so"
-  "${DOCA_LIBPATH}/libdoca_comm_channel.so")
+  "${DOCA_LIBPATH}/libdoca_comch.so")
 
 # Report to the parent scope that we are building a plugin.
 set(LIBOMPTARGET_SYSTEM_TARGETS

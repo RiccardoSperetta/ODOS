@@ -47,7 +47,7 @@ struct DOCAKernelTy : public GenericKernelTy {
   Error initImpl(GenericDeviceTy &GenericDevice,
                  DeviceImageTy &Image) override {
     // Set the maximum number of threads to a single.
-    MaxNumThreads = 1; // get it from ARM ???
+    MaxNumThreads = 1; //GPU related, multithreading is managed internally on the DPU
     return Plugin::success();
   }
 
@@ -55,16 +55,19 @@ struct DOCAKernelTy : public GenericKernelTy {
   Error launchImpl(GenericDeviceTy &GenericDevice, uint32_t NumThreads,
                    uint64_t NumBlocks, KernelArgsTy &KernelArgs, void *Args,
                    AsyncInfoWrapperTy &AsyncInfoWrapper) const override {
-	unsigned int i;
-	struct bf_openmp_cmd cmd;
-	cmd.cmd            = Command::CMD_RUN_TARGET_REGION;
-	cmd.run.entry      = (int64_t)Func;
-	cmd.run.total_args = (int64_t)KernelArgs.NumArgs;
+    unsigned int i;
+    struct bf_openmp_cmd cmd;
+    cmd.cmd            = Command::CMD_RUN_TARGET_REGION;
+    cmd.run.entry      = (int64_t)Func;
+    cmd.run.total_args = (int64_t)KernelArgs.NumArgs;
 
-	this->BF->send_buf(&cmd, sizeof(cmd));
-	for (i = 0; i < KernelArgs.NumArgs; ++i) {
-		this->BF->send_buf(static_cast<void ***>(Args)[i], sizeof(void *));
-	}
+    //first we send the command
+    this->BF->send_buf(&cmd, sizeof(cmd));
+    //then arguments one by one
+    for (i = 0; i < KernelArgs.NumArgs; ++i) {
+      this->BF->send_buf(static_cast<void ***>(Args)[i], sizeof(void *));
+    }
+    // wait for acknowledgment
     this->BF->recv_buf(this->BF->conn.rbuf, __MAX_SZ__);
 
     return Plugin::success();
@@ -114,15 +117,15 @@ struct DOCADeviceTy : public GenericDeviceTy {
     }
     Res = BF.connect();
     if (Res == -1) {
-    return Plugin::error("failed to connect bluefied device");
-  }
+      return Plugin::error("failed to connect bluefied device");
+    }
     return Plugin::success();
   }
 
   /// Deinitialize the device and release its resources.
   Error deinitImpl() override {
-  BF.deinit();
-  return Plugin::success();
+    BF.deinit();
+    return Plugin::success();
   }
 
   /// Allocate and construct a DOCA kernel.
@@ -417,6 +420,7 @@ GenericPluginTy *Plugin::createPlugin() { return new DOCAPluginTy(); }
 
 
 /// Create a plugin-specific device.
+// NOTE: where does the knowledge of DeviceId come from?
 GenericDeviceTy *Plugin::createDevice(int32_t DeviceId, int32_t NumDevices) {
   return new DOCADeviceTy(DeviceId, NumDevices);
 }

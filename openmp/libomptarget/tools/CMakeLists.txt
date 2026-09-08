@@ -24,7 +24,8 @@ macro(add_openmp_tool_symlink name)
   llvm_add_tool_symlink(OPENMP ${ARGV})
 endmacro()
 
+#NOTE: port didn't take place in docaservice and pdoca
 add_subdirectory(deviceinfo)
 add_subdirectory(kernelreplay)
-add_subdirectory(docaservice)
-add_subdirectory(pdoca)
+#add_subdirectory(docaservice)
+#add_subdirectory(pdoca)
