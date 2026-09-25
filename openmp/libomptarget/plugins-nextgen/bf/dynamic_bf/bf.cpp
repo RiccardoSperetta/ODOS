@@ -1,12 +1,18 @@
 #include "bf.hpp"
 #include "doca_comch.h"
 #include "doca_ctx.h"
+#include "doca_dev.h"
 #include "doca_error.h"
 #include "doca_log.h"
 #include "doca_pe.h"
 #include <cstddef>
 #include <stdint.h>
 #include <stdio.h>
+#include <unistd.h>
+
+//TODO: add the DOCA sdk logs
+//	ret = doca_log_backend_create_with_file_sdk(stdout, &sdk_log);
+
 
 DOCA_LOG_REGISTER("libomptarget bf");
 // Automatically executed when libomptarget.rtl.bf.so is loaded by dlopen()
@@ -66,9 +72,8 @@ int BlueField::send_buf(const void *buf, size_t sz)
             (const uint8_t *)buf + sent_len, len,
             &task);
 
-		// Pool exhausted — the one case where we DO need to drain a bit 
+		// Pool exhausted — the one case where we DO need to drain 
 		// - HOPEFULLY we've built the system, revolving around __ACK_RESET__, in a way that we don't need this check
-		/*
 		//TODO: maybe make it cleaner... and log something
 		while (ret == DOCA_ERROR_NO_MEMORY) {
 				doca_pe_progress(conn.pe);   // let some in-flight sends complete, freeing slots
@@ -77,7 +82,6 @@ int BlueField::send_buf(const void *buf, size_t sz)
 						(const uint8_t *)buf + sent_len, len,
 						&task);
 		}
-		*/
 		if (ret != DOCA_SUCCESS) {
 			DOCA_LOG_ERR("bf send failed (alloc). %ld bytes", sz);
 			return -1;
@@ -179,7 +183,6 @@ int DynamicLibrary::writeImage(void *Image, std::size_t ImageSize)
 	ret = this->bf->send_buf((void*)&cmd, sizeof(cmd));
 	if (ret != DOCA_SUCCESS) {
 		DOCA_LOG_ERR("load binary cmd failed to send.");
-		//return NULL;
 		return 0;
 	}
 
@@ -188,8 +191,10 @@ int DynamicLibrary::writeImage(void *Image, std::size_t ImageSize)
 	this->bf->recv_buf(this->bf->conn.rbuf, __MAX_SZ__);
 	sscanf(this->bf->conn.rbuf, _DEM_ "%ld" _DEM_, (long *)&this->hndl);
 	//printf("hndl %ld", (unsigned long)this->hndl);
-	if (this->hndl == NULL)
+	if (this->hndl == NULL) {
+		DOCA_LOG_ERR("failed to get a valid hndl from DPU about the sent Image");
 		return -1;
+	}
 
 	return 0;
 }
@@ -227,18 +232,13 @@ void BlueField::getInfo(std::vector<std::string> &labels, std::vector<std::strin
 
   //labels.push_back("PCI Address");
   //info.push_back(std::string(pci_buf));
-#if 1
   labels.push_back("IPv4 Address");
   info.push_back(std::string((char *)ipv4_buf));
   labels.push_back("iface");
   info.push_back(std::string(iface_buf));
-#endif
   //labels.push_back("ibdev");
   //info.push_back(std::string(ibdev_buf));
-#if 0
-  labels.push_back("dpa support");
-  info.push_back(dpa_support == DOCA_SUCCESS? std::string("yes") : std::string("no"));
-#endif
+
   labels.push_back("cc max msg size");
   info.push_back(std::to_string(max_msg_sz));
   labels.push_back("cc max number of in-flight send tasks");
@@ -258,7 +258,6 @@ int BlueField::init(int id, int mode)
 	uint32_t tmp_total_devices = 0;
 
   struct doca_devinfo **dev_list = NULL;
-  struct doca_devinfo_rep ** rep_dev_list = NULL;
 
 	this->dev = NULL;
   this->mode = mode;
@@ -272,33 +271,27 @@ int BlueField::init(int id, int mode)
 	int req_device = 0;
 
 	for (uint32_t i = 0; i < tmp_total_devices; ++i) {
-			// TEST: Check if this physical interface matches target PCI address
-		/*
-		uint8_t is_match = 0;
-		ret = doca_devinfo_is_equal_pci_addr(dev_list[i], "0000:11:00.0", &is_match);
-		if (ret != DOCA_SUCCESS || !is_match)
-				continue;
-		*/
-
-		// Verifies the device actually supports required BlueField features
-		if (doca_comch_cap_client_is_supported(dev_list[i]) != DOCA_SUCCESS) {
-				//DOCA_LOG_ERR("Device does not support DOCA comch client.");
+		// guarantees to only count actually valid devices from the provided list
+		if (doca_dma_cap_task_memcpy_is_supported(dev_list[i]) != DOCA_SUCCESS) {
 				continue;
 		}
 
-		if (req_device == id)
+		if (req_device == id) {
+			this->id = id;
 			break;
-
+		}
+			
 		++req_device;
 	}
 
-	//TEST:
+	//FIXME: handle out of bound ids
+
 	char pci_addr_str[DOCA_DEVINFO_PCI_ADDR_SIZE] = {0};
 	doca_devinfo_get_pci_addr_str(dev_list[req_device], pci_addr_str);
 	DOCA_LOG_INFO("Working on device [%d] - PCI address = %s", req_device, pci_addr_str);
 
 	// opens the device for later use
-  doca_dev_open(dev_list[req_device], &this->dev);
+  ret = doca_dev_open(dev_list[req_device], &this->dev);
   if (ret != DOCA_SUCCESS || this->dev == NULL) {
     DOCA_LOG_ERR("failed to open DOCA device");
     return -1;
@@ -312,18 +305,23 @@ int BlueField::init(int id, int mode)
 }
 
 int BlueField::deinit() {
-  fprintf(stderr, "[BF Host] Deinitializing device\n");
-
+  DOCA_LOG_INFO("Deinitializing device [%d]\n", this->id);
+	doca_error_t ret;
   // Teardown communication channel connection
-  this->disconnect();
+  ret = (doca_error_t)this->disconnect();
+	if (ret != 0) {
+		return -1;
+	}
 
   // Safely close the primary DOCA device handle
   if (this->dev != nullptr) {
-    doca_error_t ret = doca_dev_close(this->dev);
+    ret = doca_dev_close(this->dev);
     if (ret != DOCA_SUCCESS)
       fprintf(stderr, "[BF Host] Failed to close DOCA device: %s\n", doca_error_get_descr(ret));
     this->dev = nullptr;
   }
+
+	DOCA_LOG_INFO("Deinitialization completed for device [%d]\n", this->id);
 
   return 0;
 }
@@ -331,36 +329,36 @@ int BlueField::deinit() {
 // NOTE: host (client) side ODOS is always in CLIENTMODE
 int BlueField::connect()
 {
-	DOCA_LOG_INFO("Connecting device");
+	DOCA_LOG_INFO("Connecting device [%d] - A", this->id);
 
-  int ret;
+  doca_error_t ret;
 
 	this->conn.client = nullptr;
 	this->conn.ctx = nullptr;
 	this->conn.pe = nullptr;
 	this->conn.connection = nullptr;
 
-	union doca_data user_data;
-
 	//context init
 	ret = doca_pe_create(&this->conn.pe);
 	if (ret != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed creating pe");
+		DOCA_LOG_ERR("Failed creating pe, [%s]", doca_error_get_name(ret));
+		this->disconnect();
 		return -1;
 	}
 
 	ret = doca_comch_client_create(this->dev, SERVER_NAME, &this->conn.client);
 	if (ret != DOCA_SUCCESS) {
-			DOCA_LOG_ERR("failed to create comch client");
+			DOCA_LOG_ERR("failed to create comch client, [%s]", doca_error_get_name(ret));
+			this->disconnect();
 			return -1;
 	}
-	DOCA_LOG_DBG("created comch client");
 
 	this->conn.ctx = doca_comch_client_as_ctx(this->conn.client);
 
 	ret = doca_pe_connect_ctx(this->conn.pe, this->conn.ctx);
 	if (ret != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed adding pe context to client");
+		DOCA_LOG_ERR("Failed adding pe context to client, [%s]", doca_error_get_name(ret));
+		this->disconnect();
 		return -1;
 	}
 
@@ -371,14 +369,16 @@ int BlueField::connect()
 							this->conn.send_error_cb, 
 							(__ACK_RESET__ / __MAX_SZ__ + 4)); //to match the __ACK_RESET__ = 32*__MAX_SZ__ (we allow for extra room)
 	if (ret != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("doca_comch_client_task_send_set_conf failed");
+		DOCA_LOG_ERR("doca_comch_client_task_send_set_conf failed, [%s]", doca_error_get_name(ret));
+		this->disconnect();
 		return -1;
 	}
 
 	// and receivement event
 	ret = doca_comch_client_event_msg_recv_register(this->conn.client, this->conn.message_recv_cb);
 	if (ret != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("doca_comch_client_event_msg_recv_register failed");
+		DOCA_LOG_ERR("doca_comch_client_event_msg_recv_register failed, [%s]", doca_error_get_name(ret));
+		this->disconnect();
 		return -1;
 	}
 
@@ -386,37 +386,44 @@ int BlueField::connect()
 
 	ret = doca_ctx_start(this->conn.ctx);
 	if (ret != DOCA_SUCCESS && ret != DOCA_ERROR_IN_PROGRESS) {
-		DOCA_LOG_ERR("Failed to start client context (right at the start)");
+		DOCA_LOG_ERR("Failed to start client context (right at the start), [%s]", doca_error_get_name(ret));
+		this->disconnect();
 		return -1;
 	}
 
 	// Handshake Loop for connection establishment
 	enum doca_ctx_states state;
 	do {
+		//FIXME: may write a better loop with timeout + checking return of doca_ctx_get_state
 			doca_pe_progress(this->conn.pe);
 			doca_ctx_get_state(this->conn.ctx, &state);
 	} while (state == DOCA_CTX_STATE_STARTING);
 
 	if (state != DOCA_CTX_STATE_RUNNING) {
 			DOCA_LOG_ERR("Failed to start client context (even after waiting, but reached %d state)", state);
+			this->disconnect();
 			return -1;
 	}
 
-	//TODO: is it safe to do it here?
+	// Precisely because we're on client we're sure (once context is running) that the connection has been established
 	ret = doca_comch_client_get_connection(this->conn.client, &this->conn.connection);
 	if (ret != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to get connection from client");
+		DOCA_LOG_ERR("Failed to get connection from client, [%s]", doca_error_get_name(ret));
+		this->disconnect();
 		return -1;
 	}
 
+	union doca_data user_data;
 	//user_data needed upon receivement: callback will store buffer in BlueFieldConnection.rbuf buffer
 	user_data.ptr = static_cast<void *>(&this->conn);
 	ret = doca_comch_connection_set_user_data(this->conn.connection, user_data);
 	if (ret != DOCA_SUCCESS) {
-		DOCA_LOG_ERR("Failed to set user_data for connection");
+		DOCA_LOG_ERR("Failed to set user_data for connection, [%s]", doca_error_get_name(ret));
+		this->disconnect();
 		return -1;
 	}
 
+	DOCA_LOG_INFO("connection established");
 	return 0;
 }
 
@@ -428,8 +435,8 @@ int BlueField::disconnect() {
   if (this->conn.ctx != nullptr) {
     ret = doca_ctx_stop(this->conn.ctx);
     if (ret != DOCA_SUCCESS && ret != DOCA_ERROR_IN_PROGRESS) {
-      fprintf(stderr, "[BF Host] Warning: Failed to initiate context stop: %s\n", 
-              doca_error_get_descr(ret));
+      DOCA_LOG_ERR("[BF Host] Warning: Failed to initiate context stop: %s\n", doca_error_get_descr(ret));
+			return -1;
     }
 
     // 2. Draining loop with a timeout guard to prevent locking up LLVM host threads
@@ -441,31 +448,35 @@ int BlueField::disconnect() {
 
       ret = doca_ctx_get_state(this->conn.ctx, &state);
       if (ret != DOCA_SUCCESS) {
-        fprintf(stderr, "[BF Host] Failed to query context state: %s\n", 
-                doca_error_get_descr(ret));
-        break;
+        DOCA_LOG_ERR( "[BF Host] Failed to query context state: %s\n", doca_error_get_descr(ret));
+        return -1;
       }
 
       if (--timeout_counter <= 0) {
-        fprintf(stderr, "[BF Host] Timed out waiting for context state IDLE (current: %d)\n", state);
+        DOCA_LOG_ERR( "[BF Host] Timed out waiting for context state IDLE (current: %d)\n", state);
         break;
       }
+			usleep(100);
     } while (state != DOCA_CTX_STATE_IDLE);
   }
 
   // 3. Destroy client and progress engine (sets handles to nullptr for idempotency)
   if (this->conn.client != nullptr) {
     ret = doca_comch_client_destroy(this->conn.client);
-    if (ret != DOCA_SUCCESS)
-      fprintf(stderr, "[BF Host] Failed to destroy comch client: %s\n", doca_error_get_descr(ret));
+    if (ret != DOCA_SUCCESS) {
+			DOCA_LOG_ERR( "[BF Host] Failed to destroy comch client: %s\n", doca_error_get_descr(ret));
+			return -1;
+		}
     this->conn.client = nullptr;
     this->conn.ctx = nullptr; // Released by comch_client_destroy
   }
 
   if (this->conn.pe != nullptr) {
     ret = doca_pe_destroy(this->conn.pe);
-    if (ret != DOCA_SUCCESS)
-      fprintf(stderr, "[BF Host] Failed to destroy PE: %s\n", doca_error_get_descr(ret));
+    if (ret != DOCA_SUCCESS) {
+      DOCA_LOG_ERR( "[BF Host] Failed to destroy PE: %s\n", doca_error_get_descr(ret));
+			return -1;
+		}
     this->conn.pe = nullptr;
   }
 
@@ -487,7 +498,6 @@ std::size_t bfGetTotalDevices()
   for (i = 0, total_devices = 0; i < tmp_total_devices; ++i) {
     ret = doca_dma_cap_task_memcpy_is_supported(dev_list[i]);
     if (ret != DOCA_SUCCESS) {
-      DOCA_LOG_ERR("dma not supported.");
       continue;
     }
   

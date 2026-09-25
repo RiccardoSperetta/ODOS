@@ -14,7 +14,6 @@
 #include "bf.hpp"
 
 #include "Debug.h"
-//#include "Environment.h"
 #include "GlobalHandler.h"
 #include "OmptCallback.h"
 #include "PluginInterface.h"
@@ -420,7 +419,6 @@ GenericPluginTy *Plugin::createPlugin() { return new DOCAPluginTy(); }
 
 
 /// Create a plugin-specific device.
-// NOTE: where does the knowledge of DeviceId come from?
 GenericDeviceTy *Plugin::createDevice(int32_t DeviceId, int32_t NumDevices) {
   return new DOCADeviceTy(DeviceId, NumDevices);
 }

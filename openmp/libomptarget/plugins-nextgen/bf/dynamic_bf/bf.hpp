@@ -129,6 +129,7 @@ private:
 };
 
 struct BlueField {
+  int id;
   struct Command Cmd;
   struct DynamicLibrary DynLib;
   int init(int id, int mode);

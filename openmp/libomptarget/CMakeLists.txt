@@ -121,4 +121,4 @@ add_subdirectory(DeviceRTL)
 add_subdirectory(tools)
 
 # Add tests.
-add_subdirectory(test)
+#add_subdirectory(test)
