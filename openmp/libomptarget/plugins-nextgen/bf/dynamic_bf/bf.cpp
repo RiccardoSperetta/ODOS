@@ -10,19 +10,21 @@
 #include <stdio.h>
 #include <unistd.h>
 
-//TODO: add the DOCA sdk logs
-//	ret = doca_log_backend_create_with_file_sdk(stdout, &sdk_log);
-
-
 DOCA_LOG_REGISTER("libomptarget bf");
-// Automatically executed when libomptarget.rtl.bf.so is loaded by dlopen()
+// Log levels chosen at run time (DOCA numeric values: 30=error, 40=warning, 50=info, 60=debug):
+//   LIBOMPTARGET_BF_LOG (plugin, default 40), LIBOMPTARGET_BF_SDK_LOG (DOCA SDK, default 30)
+static int env_level(const char *Env, int Default) {
+  const char *Val = getenv(Env);
+  return Val ? atoi(Val) : Default;
+}
+
+// NOTE: levels must be set BEFORE creating the backends, which take them as defaults at creation time
 __attribute__((constructor)) static void init_doca_logging() {
-	int ret;
-	ret = doca_log_backend_create_standard();
-  if (ret != DOCA_SUCCESS)
-    return;
-  // Set global level to DEBUG (or INFO) to see everything
-  doca_log_level_set_global_sdk_limit(DOCA_LOG_LEVEL_DEBUG);
+  struct doca_log_backend *sdk_log;
+  doca_log_level_set_global_lower_limit(env_level("LIBOMPTARGET_BF_LOG", DOCA_LOG_LEVEL_WARNING));
+  doca_log_level_set_global_sdk_limit(env_level("LIBOMPTARGET_BF_SDK_LOG", DOCA_LOG_LEVEL_ERROR));
+  doca_log_backend_create_standard();
+  doca_log_backend_create_with_file_sdk(stderr, &sdk_log);
 }
 
 // Essential callbacks used by DOCA comch send and receive tasks
@@ -329,7 +331,7 @@ int BlueField::deinit() {
 // NOTE: host (client) side ODOS is always in CLIENTMODE
 int BlueField::connect()
 {
-	DOCA_LOG_INFO("Connecting device [%d] - A", this->id);
+	DOCA_LOG_INFO("Connecting device [%d]", this->id);
 
   doca_error_t ret;
 
