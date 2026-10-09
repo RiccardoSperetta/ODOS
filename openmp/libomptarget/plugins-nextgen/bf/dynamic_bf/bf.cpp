@@ -270,36 +270,42 @@ int BlueField::init(int id, int mode)
     return -1;
   }
   
-	int req_device = 0;
+	// id only counts the valid (DMA-capable) devices, so it is not a position in dev_list:
+	// look for the position of the id-th valid device
+	int found = -1;
 
-	for (uint32_t i = 0; i < tmp_total_devices; ++i) {
+	for (uint32_t i = 0, valid = 0; i < tmp_total_devices; ++i) {
 		// guarantees to only count actually valid devices from the provided list
 		if (doca_dma_cap_task_memcpy_is_supported(dev_list[i]) != DOCA_SUCCESS) {
 				continue;
 		}
 
-		if (req_device == id) {
-			this->id = id;
+		if (valid == (uint32_t)id) {
+			found = i;
 			break;
 		}
-			
-		++req_device;
+
+		++valid;
 	}
 
-	//FIXME: handle out of bound ids
+	if (found < 0) {
+		DOCA_LOG_ERR("Device [%d] does not exist: not enough valid DOCA devices", id);
+		doca_devinfo_destroy_list(dev_list);
+		return -1;
+	}
+	this->id = id;
 
 	char pci_addr_str[DOCA_DEVINFO_PCI_ADDR_SIZE] = {0};
-	doca_devinfo_get_pci_addr_str(dev_list[req_device], pci_addr_str);
-	DOCA_LOG_INFO("Working on device [%d] - PCI address = %s", req_device, pci_addr_str);
+	doca_devinfo_get_pci_addr_str(dev_list[found], pci_addr_str);
+	DOCA_LOG_INFO("Working on device [%d] - PCI address = %s", id, pci_addr_str);
 
-	// opens the device for later use
-  ret = doca_dev_open(dev_list[req_device], &this->dev);
+	// opens the device for later use (the list can be destroyed right after, as DOCA samples do)
+  ret = doca_dev_open(dev_list[found], &this->dev);
+  doca_devinfo_destroy_list(dev_list);
   if (ret != DOCA_SUCCESS || this->dev == NULL) {
     DOCA_LOG_ERR("failed to open DOCA device");
     return -1;
   }
-
-  doca_devinfo_destroy_list(dev_list);
 
   DynLib.init(this);
 
